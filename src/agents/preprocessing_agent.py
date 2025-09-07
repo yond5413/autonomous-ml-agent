@@ -12,6 +12,9 @@ class PreprocessingAgent(Agent):
         except json.JSONDecodeError:
             raise ValueError("model_selection_result is not a valid JSON.")
 
+        preprocessing_plan = model_selection.get("preprocessing_plan", [])
+        plan_as_string = "\n".join(f"- {step}" for step in preprocessing_plan)
+
         prompt = f"""
 You are an expert data scientist tasked with writing a Python script to preprocess a dataset for model training.
 
@@ -20,27 +23,26 @@ Here is the context:
     ```
     {exploration_summary}
     ```
-2.  **Selected Model**:
-    - Model: {model_selection.get('recommended_model')}
-    - Task Type: {model_selection.get('task_type')}
-    - Reasoning: {model_selection.get('reasoning')}
+2.  **Selected Model**: {model_selection.get('recommended_model')}
+3.  **Recommended Preprocessing Plan**:
+    ```
+    {plan_as_string}
+    ```
 
 The dataset is located in the sandbox at: `{file_path}`
 The name of the target column is `{target_column}`.
 
-**Your task is to generate a Python script that performs the following preprocessing steps:**
-1.  Load the dataset from the provided path.
-2.  Identify the target variable using the provided target column name.
-3.  **Handle Outliers**: Detect and remove outliers from numerical columns.
-4.  **Data Splitting**: Split the data into training (80%), testing (15%), and validation (5%) sets.
-5.  **Preprocessing Pipeline**: Create a `ColumnTransformer` pipeline from `sklearn.compose`.
-    - For numerical columns: Apply scaling and normalization.
-    - For categorical columns: Apply one-hot encoding.
-6.  **Apply Transformations** to the datasets.
-7.  **Save Processed Data**: Save the transformed datasets (X_train, X_test, X_val, y_train, y_test, y_val) as CSV files.
-8.  **Output**: Print a JSON object to standard output containing the file paths of the saved datasets.
+**Your primary task is to generate a Python script that meticulously implements the Recommended Preprocessing Plan.**
 
-**Important**: After applying the `ColumnTransformer`, the output will be a NumPy array. Use `preprocessor.get_feature_names_out()` to get the correct column names for the transformed data. Ensure the shape of the transformed data matches the number of feature names before creating a DataFrame.
+In addition to the plan, ensure your script also performs these standard operations:
+1.  **Load the dataset** from the provided path.
+2.  **Identify the target variable** using the provided target column name.
+3.  **Data Splitting**: Split the data into training (80%), testing (15%), and validation (5%) sets. **This should be done BEFORE applying preprocessing** to prevent data leakage.
+4.  **Apply Transformations**: Apply the preprocessing steps to the different data splits correctly (e.g., fit on training data, transform test and validation data).
+5.  **Save Processed Data**: Save the transformed datasets (X_train, X_test, X_val, y_train, y_test, y_val) as CSV files.
+6.  **Output**: Print a JSON object to standard output containing the file paths of the saved datasets.
+
+**CRITICAL TECHNICAL NOTE**: When using `ColumnTransformer`, the number of output columns will change. After fitting the transformer (e.g., `preprocessor.fit(X_train)`), you **MUST** use `preprocessor.get_feature_names_out()` to get the new column names. Use these new names when creating the DataFrames for the transformed X_train, X_test, and X_val data to prevent a shape mismatch error.
 
 Please generate only the Python script itself, without any explanations.
 """
@@ -69,6 +71,7 @@ Please generate only the Python script itself, without any explanations.
             code_match = re.search(r'```(?:python)?\s*(.*?)```', generated_text, re.DOTALL)
             
             if not code_match:
+                print(f"[{self.__class__.__name__}] Attempt {attempt + 1}/{max_retries} failed: LLM did not return a Python code block.")
                 feedback = "Your response did not contain a Python code block. Please generate only the Python code, enclosed in a ```python ... ``` block."
                 messages.append({"role": "user", "content": feedback})
                 if attempt == max_retries - 1:
@@ -88,11 +91,17 @@ Please generate only the Python script itself, without any explanations.
             
                 if getattr(execution, "error", None):
                     err = execution.error
+                    error_details = (
+                        f"Error Name: {getattr(err, 'name', 'ExecutionError')}\n"
+                        f"Error Value: {getattr(err, 'value', str(err))}\n"
+                        f"Traceback:\n{getattr(err, 'traceback', '')}"
+                    )
+                    print(f"\n[{self.__class__.__name__}] Attempt {attempt + 1}/{max_retries} failed: Code execution error.")
+                    print(error_details)
+
                     feedback = (
                         "Your code failed to execute. Here is the error:\n\n"
-                        f"Error Name: {getattr(err, 'name', 'ExecutionError')}\n"
-                        f"Error Value: {getattr(err, 'value', str(err))}\n\n"
-                        f"Traceback:\n{getattr(err, 'traceback', '')}\n\n"
+                        f"{error_details}\n\n"
                         "Please fix the code and provide the corrected full script."
                     )
                     messages.append({"role": "user", "content": feedback})
@@ -121,16 +130,20 @@ Please generate only the Python script itself, without any explanations.
                 # On success, return the sandbox so the caller can close it.
                 return {
                     "download_urls": download_urls,
+                    "remote_paths": processed_files,
                     "sandbox": sbx,
                 }
             except Exception as e:
+                if sbx:
+                    sbx.kill()
+                
+                print(f"\n[{self.__class__.__name__}] Attempt {attempt + 1}/{max_retries} failed: An unexpected exception occurred.")
+                print(f"Exception: {e}")
+
                 feedback = f"An unexpected error occurred during execution: {e}\nThis might be an issue with the generated code or the environment. Please review and fix."
                 messages.append({"role": "user", "content": feedback})
 
                 if attempt == max_retries - 1:
                     raise e
-            finally:
-                if sbx:
-                    sbx.close()
 
         raise Exception("Failed to generate and execute valid code after multiple attempts.")
