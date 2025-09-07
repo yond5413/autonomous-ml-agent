@@ -1,15 +1,29 @@
 import streamlit as st
 import pandas as pd
-import requests, json   # or an internal RPC to orchestrator
+import sys
+import os
 
-st.title("AutoTabular — Preprocessing Explorer")
-uploaded = st.file_uploader("Upload CSV", type=["csv"])
-if uploaded:
-    df = pd.read_csv(uploaded)
-    st.write("Preview", df.head())
-    target = st.selectbox("Select target column", df.columns)
+# Add the project root to the Python path
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
+from src.orchestrator import Orchestrator
+import json
+
+st.title("Autonomous Tabular ML Agent")
+
+# File uploader
+uploaded_file = st.file_uploader("Upload CSV", type=["csv"])
+if uploaded_file is not None:
+    df = pd.read_csv(uploaded_file)
+    st.write("Preview:", df.head())
+
+    # Target selection
+    target = st.selectbox("Select target variable", df.columns)
+
     if st.button("Run Preprocessing Agent"):
-        # send dataframe+target to orchestrator (POST /orchestrate or via library)
-        # For Phase 1 you can base64/csv->post to your local orchestrator
-        st.info("Running preprocessing agent...")
-        # show returned JSON/summary/plots in same UI
+        st.info("Sending to orchestrator...")
+        orchestrator = Orchestrator()
+        result = orchestrator.run_pipeline(df, target)
+        st.info("Orchestrator finished.")
+        if result:
+            st.json(json.loads(result))

@@ -10,7 +10,7 @@ streamlit = "^1.26.0"
 pandas = "^2.0.3"
 requests = "^2.31.0"
 openai = "^0.28.0"
-e2b-code-interpreter = "*"
+e2b-code-interpreter = "^2.0.0"
 
 [tool.poetry.dev-dependencies]
 pytest = "^7.4.0"
