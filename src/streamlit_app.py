@@ -66,3 +66,4 @@ if uploaded_file is not None:
             st.error(f"An error occurred in the pipeline:")
             st.exception(e)
             
+

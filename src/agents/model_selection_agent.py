@@ -44,5 +44,5 @@ Your response should be a JSON object with the following structure:
         json_match = re.search(r'```json\s*\n(.*?)```', response_text, re.DOTALL)
         if json_match:
             return json_match.group(1).strip()
-        
+        print(response_text)
         return response_text

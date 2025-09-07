@@ -69,46 +69,73 @@ Make sure to handle any data loading issues gracefully.
         
         print("Generated text from LLM:", generated_text)
         print("Extracted code:", code)
-        
+
+        # Normalize dataset path usage in generated code by replacing any string literal
+        # or Path(...) that contains the uploaded file's basename with the remote path.
+        remote_path = dataset_path.path
+        base_name = os.path.basename(file_path)
+
+        # Replace Path("...<basename>...") -> Path(remote_path)
+        code_to_run = re.sub(
+            r'Path\((["\'])(?:(?!\1).)*' + re.escape(base_name) + r'(?:(?!\1).)*\1\)',
+            f'Path("{remote_path}")',
+            code,
+            flags=re.DOTALL,
+        )
+        # Replace any "...<basename>..." string literal -> remote_path
+        code_to_run = re.sub(
+            r'(["\'])(?:(?!\1).)*' + re.escape(base_name) + r'(?:(?!\1).)*\1',
+            f'"{remote_path}"',
+            code_to_run,
+            flags=re.DOTALL,
+        )
+        # Also replace the exact local path if present
+        code_to_run = code_to_run.replace(file_path, remote_path)
+
         # Run the code
         try:
-            execution = sbx.run_code(code, timeout=600) # Increased timeout to 10 minutes
+            execution = sbx.run_code(code_to_run, timeout=600) # Increased timeout to 10 minutes
             
             # Safely get execution results
             output = None
-            error = None
             
-            # Try to get output from various possible attributes
-            if hasattr(execution, 'text'):
-                output = execution.text
-            elif hasattr(execution, 'stdout'):
-                output = execution.stdout
-            elif hasattr(execution, 'output'):
-                output = execution.output
-            elif hasattr(execution, 'result'):
-                output = execution.result
+            # Prefer common output attributes without touching .stdout
+            for attr in ["text", "output", "result"]:
+                val = getattr(execution, attr, None)
+                if val:
+                    output = val
+                    break
             
-            # Try to get error
-            if hasattr(execution, 'error'):
-                error = execution.error
+            # Fall back to logs if available
+            if not output:
+                logs = getattr(execution, "logs", None)
+                if isinstance(logs, str):
+                    output = logs.strip()
+                elif isinstance(logs, (list, tuple)):
+                    try:
+                        # Many SDKs provide structured logs; attempt to extract message/content
+                        pieces = []
+                        for item in logs:
+                            if isinstance(item, str):
+                                pieces.append(item)
+                            else:
+                                msg = getattr(item, "message", None) or getattr(item, "content", None) or str(item)
+                                pieces.append(str(msg))
+                        output = "".join(pieces).strip()
+                    except Exception:
+                        output = "".join(str(x) for x in logs)
             
-            print("Execution output:", output)
-            if error:
-                print("Execution error:", error)
+            # Capture any error and raise with context
+            err = getattr(execution, "error", None)
+            if err:
+                err_name = getattr(err, "name", type(err).__name__ if err else "ExecutionError")
+                err_value = getattr(err, "value", str(err))
+                err_traceback = getattr(err, "traceback", "")
+                partial = (output[:1000] if isinstance(output, str) else str(output)) if output else ""
+                raise Exception(f"{err_name}: {err_value}\n{err_traceback}\n{partial}")
             
-            if error:
-                raise Exception(f"Code execution failed: {error}")
+            # Return the output or fallback to stringified execution object
+            return output if output else str(execution)
             
-            # Return the output
-            return output if output else "No output generated"
-            
-        except AttributeError as e:
-            print(f"AttributeError during execution: {e}")
-            print("Execution object type:", type(execution))
-            print("Execution object attributes:", [attr for attr in dir(execution) if not attr.startswith('_')])
-            
-            # Try to get any available output as string representation
-            return str(execution) if execution else "Execution completed but no output available"
         except Exception as e:
-            print(f"Exception during code execution: {e}")
             raise Exception(f"Code execution failed: {e}")

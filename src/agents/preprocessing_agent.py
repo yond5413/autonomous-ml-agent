@@ -51,7 +51,7 @@ Please generate only the Python script itself, without any explanations.
         )
         
         messages = [
-            {"role": "system", "content": "You are a data engineering expert who writes and debugs Python scripts for data preprocessing."}, 
+            {"role": "system", "content": "You are a data engineering expert who writes and debugs Python scripts for data preprocessing."},
             {"role": "user", "content": prompt}
         ]
         
@@ -77,32 +77,60 @@ Please generate only the Python script itself, without any explanations.
 
             code = code_match.group(1).strip()
 
+            sbx = None
             try:
-                with Sandbox.create() as sbx:
-                    with open(file_path, "rb") as f:
-                        remote_path = sbx.files.write(os.path.basename(file_path), f).path
-                    
-                    code_to_run = code.replace(file_path, remote_path)
-                    execution = sbx.run_code(code_to_run, timeout=600) # Increased timeout to 10 minutes
+                sbx = Sandbox.create()
+                with open(file_path, "rb") as f:
+                    remote_path = sbx.files.write(os.path.basename(file_path), f).path
                 
-                    if execution.error:
-                        # Runtime error in the generated code
-                        feedback = f"Your code failed to execute. Here is the error:\n\nError Name: {execution.error.name}\nError Value: {execution.error.value}\n\nTraceback:\n{execution.error.traceback}\n\nPlease fix the code and provide the corrected full script."
-                        messages.append({"role": "user", "content": feedback})
-                        if attempt == max_retries - 1:
-                            raise Exception(f"Code execution failed after {max_retries} attempts. Last error: {execution.error.value}")
-                        continue # Go to next retry
-                    else:
-                        # Success!
-                        print("Generated text from LLM:", generated_text)
-                        print("Extracted code:", code)
-                        print("Execution stdout:", execution.stdout)
-                        print("Execution stderr:", execution.stderr)
-                        print("Execution error:", execution.error)
-                        print("Execution text:", execution.text)
-                        return execution.text
+                code_to_run = code.replace(file_path, remote_path)
+                execution = sbx.run_code(code_to_run, timeout=600)
+            
+                if getattr(execution, "error", None):
+                    err = execution.error
+                    feedback = (
+                        "Your code failed to execute. Here is the error:\n\n"
+                        f"Error Name: {getattr(err, 'name', 'ExecutionError')}\n"
+                        f"Error Value: {getattr(err, 'value', str(err))}\n\n"
+                        f"Traceback:\n{getattr(err, 'traceback', '')}\n\n"
+                        "Please fix the code and provide the corrected full script."
+                    )
+                    messages.append({"role": "user", "content": feedback})
+                    if attempt == max_retries - 1:
+                        raise Exception(f"Code execution failed after {max_retries} attempts. Last error: {getattr(err, 'value', str(err))}")
+                    continue
+
+                # Success!
+                output = None
+                for attr in ["text", "output", "stdout", "result"]:
+                    if hasattr(execution, attr):
+                        val = getattr(execution, attr)
+                        if val:
+                            output = val
+                            break
+                
+                if output is None:
+                    raise Exception("Could not find output from code execution. The script ran but produced no output.")
+
+                processed_files = json.loads(output)
+                
+                download_urls = {}
+                for name, path in processed_files.items():
+                    download_urls[name] = sbx.download_url(path, timeout=600)
+                
+                # On success, return the sandbox so the caller can close it.
+                return {
+                    "download_urls": download_urls,
+                    "sandbox": sbx,
+                }
             except Exception as e:
-                # Handle exceptions from sandbox creation or file operations
-                raise e
+                feedback = f"An unexpected error occurred during execution: {e}\nThis might be an issue with the generated code or the environment. Please review and fix."
+                messages.append({"role": "user", "content": feedback})
+
+                if attempt == max_retries - 1:
+                    raise e
+            finally:
+                if sbx:
+                    sbx.close()
 
         raise Exception("Failed to generate and execute valid code after multiple attempts.")
