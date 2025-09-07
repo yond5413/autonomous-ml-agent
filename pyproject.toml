@@ -9,10 +9,11 @@ python = "~3.12"
 streamlit = "^1.26.0"
 pandas = "^2.0.3"
 requests = "^2.31.0"
-openai = "^0.28.0"
+openai = "^1.13.3"
 e2b-code-interpreter = "^2.0.0"
+python-dotenv = "^1.0.0"
 
-[tool.poetry.dev-dependencies]
+[tool.poetry.group.dev.dependencies]
 pytest = "^7.4.0"
 
 [build-system]
