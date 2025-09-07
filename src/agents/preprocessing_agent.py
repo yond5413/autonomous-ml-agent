@@ -44,6 +44,21 @@ In addition to the plan, ensure your script also performs these standard operati
 
 **CRITICAL TECHNICAL NOTE**: When using `ColumnTransformer`, the number of output columns will change. After fitting the transformer (e.g., `preprocessor.fit(X_train)`), you **MUST** use `preprocessor.get_feature_names_out()` to get the new column names. Use these new names when creating the DataFrames for the transformed X_train, X_test, and X_val data to prevent a shape mismatch error.
 
+**Final Output Example**: Your script MUST end with a print statement that outputs the JSON object directly to standard output. For example:
+```python
+import json
+# ... after saving files
+output_paths = {{
+    "X_train": x_train_path,
+    "y_train": y_train_path,
+    "X_test": x_test_path,
+    "y_test": y_test_path,
+    "X_val": x_val_path,
+    "y_val": y_val_path
+}}
+print(json.dumps(output_paths))
+```
+
 Please generate only the Python script itself, without any explanations.
 """
 
