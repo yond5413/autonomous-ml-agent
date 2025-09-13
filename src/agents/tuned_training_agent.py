@@ -15,35 +15,36 @@ class TunedTrainingAgent(Agent):
         best_params = tuning_results.get("best_params")
 
         prompt = f"""
-You are an expert data scientist tasked with writing a Python script to train a final, optimized machine learning model and evaluate it.
+        You are an expert data scientist tasked with writing a Python script to train a final, optimized machine learning model and evaluate it.
 
-Here is the context:
-1.  **Model to be trained**: {model_name}
-2.  **Task Type**: {task_type}
-3.  **Optimal Hyperparameters**: Your script MUST use these exact parameters when instantiating the model.
-    ```
-    {best_params}
-    ```
-4.  **Datasets**: The datasets are available at the following URLs. Your script must load the data directly from these URLs.
-    - X_train_url: {download_urls['X_train']}
-    - y_train_url: {download_urls['y_train']}
-    - X_test_url: {download_urls['X_test']}
-    - y_test_url: {download_urls['y_test']}
-    - X_val_url: {download_urls['X_val']}
-    - y_val_url: {download_urls['y_val']}
+        Here is the context:
+        1.  **Model to be trained**: {model_name}
+        2.  **Task Type**: {task_type}
+        3.  **Optimal Hyperparameters**: Your script MUST use these exact parameters when instantiating the model.
+            ```
+            {best_params}
+            ```
+        4.  **Datasets**: The datasets are available at the following URLs. Your script must load the data directly from these URLs.
+            - X_train_url: {download_urls['X_train']}
+            - y_train_url: {download_urls['y_train']}
+            - X_test_url: {download_urls['X_test']}
+            - y_test_url: {download_urls['y_test']}
+            - X_val_url: {download_urls['X_val']}
+            - y_val_url: {download_urls['y_val']}
 
-**Your task is to generate a Python script that performs the following steps:**
-1.  **Load Data**: Load all six datasets from the provided URLs using pandas.
-2.  **Instantiate Model**: Import the specified model (`{model_name}`) from scikit-learn and instantiate it using the **Optimal Hyperparameters** provided above.
-3.  **Train Model**: Train the model on the combined training and validation data (X_train + X_val, y_train + y_val). This is important for the final model.
-4.  **Evaluate Model**: Evaluate the final model on the held-out test data (X_test, y_test).
-    - For **classification** tasks, calculate accuracy, precision, recall, and F1-score.
-    - For **regression** tasks, calculate Mean Squared Error (MSE), Mean Absolute Error (MAE), and R-squared.
-5.  **Save Model**: Save the trained model to a file named `tuned_model.pickle` using the `pickle` library.
-6.  **Output**: Print a JSON object to standard output containing the calculated evaluation metrics and the path to the saved model file (`/home/user/tuned_model.pickle`).
+        **Your task is to generate a Python script that performs the following steps:**
+        1.  **Load Data**: Load all six datasets from the provided URLs using pandas.
+        2.  **Instantiate Model**: Import the specified model (`{model_name}`) from scikit-learn and instantiate it using the **Optimal Hyperparameters** provided above.
+        3.  **Train Model**: Train the model on the combined training and validation data (X_train + X_val, y_train + y_val). This is important for the final model.
+        4.  **Evaluate Model**: Evaluate the final model on the held-out test data (X_test, y_test).
+            - For **classification** tasks, calculate accuracy, precision, recall, and F1-score.
+            - For **regression** tasks, calculate Mean Squared Error (MSE), Mean Absolute Error (MAE), and R-squared.
+        5.  **Feature Importance**: If the model has a `feature_importances_` attribute (like tree-based models), calculate and save the feature importances as a dictionary mapping feature names to their importance scores.
+        6.  **Save Model**: Save the trained model to a file named `tuned_model.pickle` using the `pickle` library.
+        7.  **Output**: Print a JSON object to standard output containing the calculated evaluation metrics, feature importances (if available), and the path to the saved model file (`/home/user/tuned_model.pickle`).
 
-Please generate only the Python script itself, without any explanations.
-"""
+        Please generate only the Python script itself, without any explanations.
+        """
 
         client = OpenAI(
             base_url="https://openrouter.ai/api/v1",
@@ -112,6 +113,19 @@ Please generate only the Python script itself, without any explanations.
                 if model_path:
                     training_results["model_download_url"] = sandbox.download_url(model_path, timeout=600)
 
+                # Generate summary
+                summary_prompt = self._create_summary_prompt(model_selection, tuning_results, training_results)
+                summary_response = client.chat.completions.create(
+                    model="qwen/qwen3-coder:free",
+                    messages=[
+                        {"role": "system", "content": "You are a machine learning expert who explains model results in an easy-to-understand way."},
+                        {"role": "user", "content": summary_prompt}
+                    ],
+                    max_tokens=1024,
+                )
+                summary = summary_response.choices[0].message.content
+                training_results["summary"] = summary
+
                 return training_results
 
             except Exception as e:
@@ -123,3 +137,29 @@ Please generate only the Python script itself, without any explanations.
                     raise e
         
         raise Exception("Failed to generate and execute valid code after multiple attempts.")
+
+    def _create_summary_prompt(self, model_selection, tuning_results, training_results):
+        model_name = model_selection.get("recommended_model")
+        task_type = model_selection.get("task_type")
+        best_params = tuning_results.get("best_params")
+        metrics = training_results.get("metrics")
+        feature_importances = training_results.get("feature_importances")
+
+        prompt = f"""
+        Please provide a summary of the machine learning model that was trained.
+
+        Here is the information about the model:
+        - **Model:** {model_name}
+        - **Task Type:** {task_type}
+        - **Best Hyperparameters:** {best_params}
+        - **Evaluation Metrics:** {metrics}
+        - **Feature Importances:** {feature_importances}
+
+        Based on this information, please provide a concise summary that covers:
+        1. An overview of the model and its performance.
+        2. An interpretation of the evaluation metrics.
+        3. An explanation of the most important features (if available).
+        
+        The summary should be easy to understand for a non-technical audience.
+        """
+        return prompt

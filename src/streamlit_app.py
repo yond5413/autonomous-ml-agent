@@ -42,21 +42,48 @@ if uploaded_file is not None:
             if result:
                 st.success("Pipeline completed successfully!")
 
+                # Display Leaderboard
+                if "leaderboard" in result:
+                    st.header("Leaderboard")
+                    leaderboard_df = pd.DataFrame([
+                        {
+                            "Model": r["model_selection"]["recommended_model"],
+                            "F1 Score": r["metrics"].get("f1_score"),
+                            "R2 Score": r["metrics"].get("r2_score"),
+                        }
+                        for r in result["leaderboard"]
+                    ])
+                    st.dataframe(leaderboard_df)
+
+                    for i, model_result in enumerate(result["leaderboard"]):
+                        with st.expander(f"Details for {model_result["model_selection"]["recommended_model"]}", expanded=i==0):
+                            st.subheader("Metrics")
+                            st.json(model_result["metrics"])
+
+                            if "feature_importances" in model_result and model_result["feature_importances"]:
+                                st.subheader("Feature Importances")
+                                feat_imp_df = pd.DataFrame(list(model_result["feature_importances"].items()), columns=["Feature", "Importance"])
+                                st.bar_chart(feat_imp_df.set_index("Feature"))
+
+                            if "summary" in model_result:
+                                st.subheader("Summary")
+                                st.markdown(model_result["summary"])
+                
+                # Display Deployment Information
+                if "deployment" in result:
+                    st.header("Deployment Information")
+                    st.info(f"The best model has been deployed. You can find the deployment files in the `{result['deployment']['deployment_path']}` directory.")
+                    with st.expander("Deployment README"):
+                        with open(os.path.join(result['deployment']['deployment_path'], 'README.md'), 'r') as f:
+                            st.markdown(f.read())
+
                 if result.get("model_selection"):
-                    with st.expander("Model Selection Details", expanded=True):
-                        try:
-                            model_selection_json = json.loads(result["model_selection"])
-                            st.json(model_selection_json)
-                        except (json.JSONDecodeError, TypeError):
-                            st.text(result["model_selection"])
+                    with st.expander("Model Selection Details"):
+                        st.json(result["model_selection"])
                 
                 if result.get("preprocessing"):
                     with st.expander("Preprocessing Result"):
-                        try:
-                            preprocessing_json = json.loads(result["preprocessing"])
-                            st.json(preprocessing_json)
-                        except (json.JSONDecodeError, TypeError):
-                            st.text(result["preprocessing"])
+                        st.json(result["preprocessing"])
 
                 if result.get("data_exploration"):
                     with st.expander("Data Exploration Summary"):

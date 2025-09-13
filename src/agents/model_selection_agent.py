@@ -9,7 +9,9 @@ Could add steps for preprocessing like suggested steps, so next agent is not bli
 class ModelSelectionAgent(Agent):
     def execute(self, exploration_summary: str, target_column: str, **kwargs):
         prompt = f"""
-As an elite data scientist, you are tasked with selecting the best machine learning model and outlining a preprocessing strategy.
+As an elite data scientist, you are tasked with selecting the best machine learning models and outlining a preprocessing strategy.
+
+The allowed models are: LogisticRegression, LinearRegression, RandomForestClassifier, RandomForestRegressor, GradientBoostingClassifier, GradientBoostingRegressor, KNeighborsClassifier, KNeighborsRegressor, MLPClassifier, MLPRegressor.
 
 The target column for our model is `{target_column}`.
 
@@ -18,8 +20,8 @@ Here is the summary from the data exploration phase:
 {exploration_summary}
 
 Based on this information, please provide the following:
-1.  **Recommend the best model type** (e.g., RandomForestClassifier, XGBoostRegressor, etc.).
-2.  **Outline a detailed, step-by-step preprocessing plan**.
+1.  **Recommend the top 3 best model types** from the allowed list.
+2.  **Outline a detailed, step-by-step preprocessing plan** that would be suitable for all recommended models.
 
 **When creating the `preprocessing_plan`, please consider including steps for the following where appropriate, based on the data summary:**
 - **Outlier Handling**: A strategy for detecting and managing outliers in numerical columns.
@@ -30,8 +32,20 @@ Based on this information, please provide the following:
 
 Your response must be a JSON object with the following structure:
 {{
-  "recommended_model": "MODEL_NAME",
-  "reasoning": "Your detailed reasoning for choosing this model.",
+  "recommended_models": [
+    {{
+      "model_name": "MODEL_NAME_1",
+      "reasoning": "Your detailed reasoning for choosing this model."
+    }},
+    {{
+      "model_name": "MODEL_NAME_2",
+      "reasoning": "Your detailed reasoning for choosing this model."
+    }},
+    {{
+      "model_name": "MODEL_NAME_3",
+      "reasoning": "Your detailed reasoning for choosing this model."
+    }}
+  ],
   "task_type": "classification or regression",
   "preprocessing_plan": [
     "Step 1: Description of preprocessing step.",

@@ -14,24 +14,30 @@ class HyperparameterTuningAgent(Agent):
         task_type = model_selection.get("task_type")
 
         prompt = f"""
-You are an expert data scientist tasked with writing a Python script to find the optimal hyperparameters for a machine learning model using RandomizedSearchCV.
+You are an expert data scientist tasked with writing a Python script to find the optimal hyperparameters for a machine learning model.
+
+You can use either RandomizedSearchCV or a Bayesian optimization library like Optuna. Optuna is available in the environment.
 
 Here is the context:
 1.  **Model to be tuned**: {model_name}
 2.  **Task Type**: {task_type}
-3.  **Datasets**: The datasets are available at the following URLs. Your script must load the data directly from these URLs.
+3.  **Data Exploration Summary**:
+    ```
+    {preprocessing_output["exploration_summary"]}
+    ```
+4.  **Datasets**: The datasets are available at the following URLs. Your script must load the data directly from these URLs.
     - X_train_url: {download_urls['X_train']}
     - y_train_url: {download_urls['y_train']}
 
 **Your task is to generate a Python script that performs the following steps:**
 1.  **Load Data**: Load the training data (X_train and y_train) from the provided URLs using pandas.
-2.  **Define Search Space**: Based on the model (`{model_name}`), define a comprehensive but reasonable hyperparameter search space. For example, for RandomForest, include n_estimators, max_depth, etc.
+2.  **Define Search Space**: Based on the model (`{model_name}`) and the data summary, define a comprehensive but reasonable hyperparameter search space. Be mindful of the dataset size and model complexity to avoid excessively long tuning times.
 3.  **Instantiate Model and Tuner**: 
     - Import the model class from scikit-learn.
-    - Import `RandomizedSearchCV` from `sklearn.model_selection`.
-    - Instantiate `RandomizedSearchCV` with the model, the parameter distribution, `n_iter=50`, `cv=5`, `n_jobs=-1`, and `random_state=42` for reproducibility.
-4.  **Run Tuning**: Fit the `RandomizedSearchCV` object on the training data.
-5.  **Extract Best Parameters**: After fitting, get the best hyperparameters from the `.best_params_` attribute of the tuner.
+    - Choose and import a suitable hyperparameter tuning library (`RandomizedSearchCV` or `Optuna`).
+    - Instantiate the tuner with the model and the parameter distribution.
+4.  **Run Tuning**: Fit the tuner object on the training data.
+5.  **Extract Best Parameters**: After fitting, get the best hyperparameters.
 6.  **Output**: Print a JSON object to standard output containing one key, `"best_params"`, with the dictionary of the best parameters as its value.
 
 Please generate only the Python script itself, without any explanations.
@@ -71,7 +77,7 @@ Please generate only the Python script itself, without any explanations.
             code = code_match.group(1).strip()
 
             try:
-                execution = sandbox.run_code(code, timeout=1800) # 30 minute timeout for tuning
+                execution = sandbox.run_code(code, timeout=600) # 10 minute timeout for tuning
 
                 if getattr(execution, "error", None):
                     err = execution.error
