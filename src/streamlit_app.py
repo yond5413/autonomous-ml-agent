@@ -5,7 +5,7 @@ import os
 from dotenv import load_dotenv
 
 # Load environment variables
-load_dotenv()
+load_dotenv(dotenv_path='.env.local')
 
 # Add the project root to the Python path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
@@ -56,7 +56,7 @@ if uploaded_file is not None:
                     st.dataframe(leaderboard_df)
 
                     for i, model_result in enumerate(result["leaderboard"]):
-                        with st.expander(f"Details for {model_result["model_selection"]["recommended_model"]}", expanded=i==0):
+                        with st.expander(f"Details for {model_result['model_selection']['recommended_model']}", expanded=i==0):
                             st.subheader("Metrics")
                             st.json(model_result["metrics"])
 
