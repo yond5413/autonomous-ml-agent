@@ -29,14 +29,37 @@ class Orchestrator:
             self._run_step(self._run_model_selection, file_path=file_path, target_column=target_column)
             self._run_step(self._run_preprocessing, file_path=file_path, target_column=target_column)
 
-            leaderboard = []
+            # Complete pipeline for each model: simple training -> hyperparameter tuning -> tuned training
+            baseline_leaderboard = []
+            tuned_leaderboard = []
             for model in self.results["model_selection"]["recommended_models"]:
                 model_name = model["model_name"]
-                print(f"--- Running training for model: {model_name} ---")
-                training_results = self._run_training_for_model(model)
-                leaderboard.append(training_results)
+                
+                # Step 1: Simple training
+                print(f"--- Running simple training for model: {model_name} ---")
+                baseline_results = self._run_simple_training(model)
+                baseline_results["phase"] = "baseline"
+                baseline_results["model_name"] = model_name
+                baseline_leaderboard.append(baseline_results)
+                
+                # Step 2: Hyperparameter tuning + tuned training
+                print(f"--- Running hyperparameter tuning for model: {model_name} ---")
+                print(f"--- Running tuned training for model: {model_name} ---")
+                tuned_results = self._run_training_for_model(model)
+                tuned_results["phase"] = "tuned"
+                tuned_results["model_name"] = model_name
+                tuned_leaderboard.append(tuned_results)
             
-            self.results["leaderboard"] = sorted(leaderboard, key=lambda x: x["metrics"].get("f1_score", x["metrics"].get("r2_score", 0)), reverse=True)
+            self.results["baseline_leaderboard"] = sorted(
+                baseline_leaderboard,
+                key=lambda x: x["metrics"].get("f1_score", x["metrics"].get("r2_score", 0)),
+                reverse=True,
+            )
+            self.results["leaderboard"] = sorted(
+                tuned_leaderboard,
+                key=lambda x: x["metrics"].get("f1_score", x["metrics"].get("r2_score", 0)),
+                reverse=True,
+            )
 
             # Run deployment for the best model
             best_model_results = self.results["leaderboard"][0]
@@ -198,8 +221,9 @@ class Orchestrator:
                     abs_path = resolve_abs(path)
                     download_urls[key] = sandbox.download_url(abs_path, timeout=600)
                 except Exception:
-                    # best-effort; skip if cannot create URL
-                    pass
+                    # Fallback to absolute path inside sandbox
+                    abs_path = resolve_abs(path)
+                    download_urls[key] = abs_path
 
         self.results["preprocessing"]["download_urls"] = download_urls
         self.results["preprocessing"]["exploration_summary"] = self.results.get("data_exploration")
@@ -229,6 +253,86 @@ class Orchestrator:
                 continue
         print("Downloads complete.")
         self.results["preprocessing"]["local_dataset_paths"] = local_dataset_paths
+
+    def _run_simple_training(self, model, **kwargs):
+        from src.agents.simple_training_agent import SimpleTrainingAgent
+        self.state = "SIMPLE_TRAINING"
+        print(f"State: {self.state}")
+        agent = SimpleTrainingAgent()
+        model_selection = {
+            "recommended_model": model["model_name"],
+            "task_type": self.results["model_selection"]["task_type"],
+        }
+        # Retry with error_context propagation
+        max_retries = 3
+        last_error = None
+        error_context = None
+        for attempt in range(max_retries):
+            try:
+                params = dict(kwargs)
+                if error_context:
+                    params["error_context"] = error_context
+                result = agent.execute(
+                    model_selection=model_selection,
+                    preprocessing_output=self.results["preprocessing"],
+                    **params,
+                )
+                # clear any prior context on success
+                error_context = None
+                break
+            except Exception as e:
+                print(f"[SimpleTraining] Attempt {attempt + 1}/{max_retries} failed: {e}")
+                last_error = e
+                # Prefer agent-provided context if available
+                agent_ctx = getattr(agent, "last_error_context", None)
+                # Ask LLM planner for retry plan
+                action, new_params = self._handle_error(self._run_simple_training, e, model=model, **kwargs)
+                llm_ctx = new_params.get("error_context") if isinstance(new_params, dict) else None
+                # Merge contexts (LLM first, then agent details)
+                merged = {}
+                if isinstance(llm_ctx, dict):
+                    merged.update(llm_ctx)
+                if isinstance(agent_ctx, dict):
+                    for k, v in agent_ctx.items():
+                        merged.setdefault(k, v)
+                error_context = merged or {
+                    "error_type": type(e).__name__,
+                    "error_message": str(e),
+                    "suggested_fixes": ["Inspect traceback and fix indicated line", "Ensure training and test preprocessing match"],
+                }
+                if action == "retry_with_new_params" or action == "retry":
+                    continue
+                else:
+                    raise e
+        else:
+            raise last_error if last_error else Exception("Simple training failed after retries")
+
+        if not result:
+            raise Exception("Simple Training Agent returned no result.")
+
+        # Download the baseline model if provided
+        model_path = result.get("model_path")
+        if model_path:
+            sandbox = self.results["preprocessing"]["sandbox"]
+            print(f"Downloading baseline model from sandbox path: {model_path}")
+            model_bytes = sandbox.files.read(model_path)
+            # Ensure bytes type; preserve raw byte values if str returned
+            if isinstance(model_bytes, str):
+                try:
+                    model_bytes = model_bytes.encode('latin-1')
+                except Exception:
+                    model_bytes = model_bytes.encode('utf-8', 'ignore')
+            models_dir = os.path.join('outputs', 'models')
+            os.makedirs(models_dir, exist_ok=True)
+            local_model_path = os.path.join(models_dir, f"{model['model_name']}_baseline.pickle")
+            with open(local_model_path, "wb") as f:
+                f.write(model_bytes)
+            print(f"Baseline model saved locally to: {local_model_path}")
+            result["local_model_path"] = local_model_path
+            # do not leak sandbox path out
+            del result["model_path"]
+
+        return result
 
     def _run_training_for_model(self, model, **kwargs):
         model_selection = {
@@ -275,7 +379,14 @@ class Orchestrator:
         if final_model_path:
             print(f"Downloading final model from sandbox path: {final_model_path}")
             model_bytes = sandbox.files.read(final_model_path)
-            local_model_path = f"{model_name}.pickle"
+            if isinstance(model_bytes, str):
+                try:
+                    model_bytes = model_bytes.encode('latin-1')
+                except Exception:
+                    model_bytes = model_bytes.encode('utf-8', 'ignore')
+            models_dir = os.path.join('outputs', 'models')
+            os.makedirs(models_dir, exist_ok=True)
+            local_model_path = os.path.join(models_dir, f"{model_name}.pickle")
             with open(local_model_path, "wb") as f:
                 f.write(model_bytes)
             print(f"Final model saved locally to: {local_model_path}")
@@ -340,6 +451,16 @@ class Orchestrator:
         solution_json = json.loads(response.choices[0].message.content)
         action = solution_json.get("action")
         params = solution_json.get("params", {})
+        # Always provide fallback error_context for downstream tools
+        if "error_context" not in params or not isinstance(params.get("error_context"), dict):
+            params["error_context"] = {
+                "error_type": type(error).__name__,
+                "error_message": str(error),
+                "suggested_fixes": [
+                    "Inspect traceback and fix the indicated line",
+                    "Ensure consistent preprocessing between train/test",
+                ],
+            }
         return action, params
 
     def _create_error_handling_prompt(self, step_name, error, params):

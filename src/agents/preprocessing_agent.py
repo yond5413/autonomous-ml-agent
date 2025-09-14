@@ -37,7 +37,7 @@ class PreprocessingAgent(Agent):
             
             try:
                 response = client.chat.completions.create(
-                    model="anthropic/claude-3.5-sonnet",
+                    model="deepseek/deepseek-chat-v3.1:free",#"anthropic/claude-3.5-sonnet",
                     messages=messages,
                     max_tokens=4096
                 )
@@ -148,7 +148,7 @@ class PreprocessingAgent(Agent):
 
         def _normalize(obj: dict) -> dict:
             # If script already returned the expected mapping
-            expected_keys = {"X_train", "X_test", "y_train", "y_test", "preprocessor"}
+            expected_keys = {"X_train", "X_val", "X_test", "y_train", "y_val", "y_test", "preprocessor"}
             if any(k in obj for k in expected_keys):
                 return {k: v for k, v in obj.items() if k in expected_keys and isinstance(v, str)}
 
@@ -160,10 +160,25 @@ class PreprocessingAgent(Agent):
 
             # If keys are *_path style
             key_map = {
+                # common outputs
                 "train_data_path": "X_train",
+                "X_train_path": "X_train",
+                "train_features_path": "X_train",
                 "test_data_path": "X_test",
+                "X_test_path": "X_test",
+                "test_features_path": "X_test",
                 "train_labels_path": "y_train",
+                "y_train_path": "y_train",
+                "train_target_path": "y_train",
                 "test_labels_path": "y_test",
+                "y_test_path": "y_test",
+                "test_target_path": "y_test",
+                "val_data_path": "X_val",
+                "X_val_path": "X_val",
+                "val_features_path": "X_val",
+                "val_labels_path": "y_val",
+                "y_val_path": "y_val",
+                "val_target_path": "y_val",
                 "preprocessor_path": "preprocessor",
             }
             if any(k in obj for k in key_map.keys()):
@@ -607,9 +622,9 @@ class PreprocessingAgent(Agent):
         3.  **Dependencies**: Only use pandas, scikit-learn, numpy, and joblib. Do NOT import category_encoders, xgboost, or other external libraries that may not be available.
         4.  **Scikit-learn Version**: You are using a modern version of scikit-learn (1.0+). For `OneHotEncoder`, you **MUST** use the `sparse_output=False` parameter, not the old `sparse=False` parameter.
         5.  **Feature Names**: After fitting the `ColumnTransformer`, derive feature names using `preprocessor.get_feature_names_out()` instead of constructing lists manually. Use these exact names when creating DataFrames from transformed arrays to avoid shape mismatches.
-        6.  **Train-Test Split**: If using stratification, ensure all classes have at least 2 samples. If stratification fails, fall back to random splitting without stratification.
+        6.  **Train/Val/Test Split**: You MUST output three splits: train, validation, and test. Aim for 64%/16%/20% (train/val/test). First split off test (20%); then split remaining into train/val (80/20). If stratification fails due to class counts, fall back to random splitting without stratification.
         7.  **Target Column**: Make sure to use the correct target column "{target_column}" - do NOT accidentally use identifier columns like customer_id.
-        8.  **Final Output**: Your script **MUST** end by printing a single JSON object to standard output. This JSON must contain the file paths of the saved datasets and the preprocessor. Do not print anything else after this JSON.
+        8.  **Final Output**: Your script **MUST** end by printing a single JSON object to standard output with these exact keys (string file paths): `X_train`, `X_val`, `X_test`, `y_train`, `y_val`, `y_test`, `preprocessor`. Do not print anything else after this JSON.
 
         **EXAMPLE SCRIPT STRUCTURE:**
         ```python
@@ -632,7 +647,15 @@ class PreprocessingAgent(Agent):
         # ... (joblib.dump, to_csv, etc.) ...
 
         # 5. Print final JSON to stdout
-        output_data = {{ ... }}
+        output_data = {{
+            "X_train": "/abs/path/to/X_train.csv",
+            "X_val": "/abs/path/to/X_val.csv",
+            "X_test": "/abs/path/to/X_test.csv",
+            "y_train": "/abs/path/to/y_train.csv",
+            "y_val": "/abs/path/to/y_val.csv",
+            "y_test": "/abs/path/to/y_test.csv",
+            "preprocessor": "/abs/path/to/preprocessor.joblib"
+        }}
         print(json.dumps(output_data))
         ```
 
