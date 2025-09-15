@@ -310,27 +310,56 @@ class Orchestrator:
         if not result:
             raise Exception("Simple Training Agent returned no result.")
 
-        # Download the baseline model if provided
+        # Download the baseline model if provided (prefer download URL; sandbox paths may be from a different sandbox)
+        model_download_url = result.get("model_download_url")
+        model_bytes = result.get("model_bytes")
         model_path = result.get("model_path")
-        if model_path:
-            sandbox = self.results["preprocessing"]["sandbox"]
-            print(f"Downloading baseline model from sandbox path: {model_path}")
-            model_bytes = sandbox.files.read(model_path)
-            # Ensure bytes type; preserve raw byte values if str returned
-            if isinstance(model_bytes, str):
-                try:
-                    model_bytes = model_bytes.encode('latin-1')
-                except Exception:
-                    model_bytes = model_bytes.encode('utf-8', 'ignore')
+        if model_bytes or model_download_url or model_path:
             models_dir = os.path.join('outputs', 'models')
             os.makedirs(models_dir, exist_ok=True)
             local_model_path = os.path.join(models_dir, f"{model['model_name']}_baseline.pickle")
-            with open(local_model_path, "wb") as f:
-                f.write(model_bytes)
-            print(f"Baseline model saved locally to: {local_model_path}")
-            result["local_model_path"] = local_model_path
-            # do not leak sandbox path out
-            del result["model_path"]
+            try:
+                if model_bytes:
+                    print(f"Saving baseline model from direct download")
+                    with open(local_model_path, 'wb') as f:
+                        f.write(model_bytes)
+                    print(f"Baseline model saved locally to: {local_model_path}")
+                    result["local_model_path"] = local_model_path
+                elif model_download_url:
+                    import requests
+                    print(f"Downloading baseline model from URL: {model_download_url}")
+                    resp = requests.get(model_download_url, timeout=600)
+                    resp.raise_for_status()
+                    with open(local_model_path, 'wb') as f:
+                        f.write(resp.content)
+                    print(f"Baseline model saved locally to: {local_model_path}")
+                    result["local_model_path"] = local_model_path
+                elif model_path:
+                    # Best-effort: this path likely lives in the training sandbox which is not available here.
+                    # Attempt to read from preprocessing sandbox only if it exists there; otherwise skip without failing the pipeline.
+                    sandbox = self.results["preprocessing"].get("sandbox")
+                    if sandbox:
+                        print(f"Attempting to read baseline model from preprocessing sandbox path: {model_path}")
+                        try:
+                            model_bytes = sandbox.files.read(model_path)
+                            if isinstance(model_bytes, str):
+                                try:
+                                    model_bytes = model_bytes.encode('latin-1')
+                                except Exception:
+                                    model_bytes = model_bytes.encode('utf-8', 'ignore')
+                            with open(local_model_path, 'wb') as f:
+                                f.write(model_bytes)
+                            print(f"Baseline model saved locally to: {local_model_path}")
+                            result["local_model_path"] = local_model_path
+                        except Exception as e:
+                            print(f"Could not read model from preprocessing sandbox: {e}. Skipping baseline download.")
+                # Clean up fields we shouldn't propagate
+                if "model_path" in result:
+                    del result["model_path"]
+                if "model_download_url" in result:
+                    del result["model_download_url"]
+            except Exception as e:
+                print(f"Failed to download baseline model artifact: {e}. Proceeding without local baseline artifact.")
 
         return result
 

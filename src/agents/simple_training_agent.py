@@ -18,34 +18,22 @@ class SimpleTrainingAgent(Agent):
         stdout = error_context.get("stdout", "")
         stderr = error_context.get("stderr", "")
 
-        fixes_block = "\n".join(f"- {fix}" for fix in suggested_fixes) if suggested_fixes else "- Review recent changes around the reported line\n- Ensure balanced quotes, brackets, parentheses\n- Check indentation and block structure"
-        stdout_block = f"\n**Stdout (context):**\n```\n{stdout}\n```" if stdout else ""
-        stderr_block = f"\n**Stderr (context):**\n```\n{stderr}\n```" if stderr else ""
+        fixes_block = "\n".join("- " + str(fix) for fix in suggested_fixes) if suggested_fixes else "- Review recent changes around the reported line\n- Ensure balanced quotes, brackets, parentheses\n- Check indentation and block structure"
+        stdout_block = ("\n**Stdout (context):**\n```\n" + str(stdout) + "\n```") if stdout else ""
+        stderr_block = ("\n**Stderr (context):**\n```\n" + str(stderr) + "\n```") if stderr else ""
 
-        return f'''
-        **PREVIOUS TRAINING ATTEMPT FAILED**
-
-        **Error Details:**
-        - Type: {error_type}
-        - Message: {error_message}
-        - Line: {line_number}
-
-        **Problematic Code Section:**
-        ```
-        {problematic_code}
-        ```
-
-        **Suggested Fixes:**
-        {fixes_block}
-        {stdout_block}
-        {stderr_block}
-
-        **Original Requirements:**
-        {original_prompt}
-
-        **TASK:**
-        Provide a corrected, complete Python script that adheres to the original requirements and addresses the error above. Reply ONLY with the full Python code inside a single markdown code block.
-        '''
+        return ("**PREVIOUS TRAINING ATTEMPT FAILED**\n\n" +
+                "**Error Details:**\n" +
+                "- Type: " + str(error_type) + "\n" +
+                "- Message: " + str(error_message) + "\n" +
+                "- Line: " + str(line_number) + "\n\n" +
+                "**Problematic Code Section:**\n" +
+                "```\n" + str(problematic_code) + "\n```\n\n" +
+                "**Suggested Fixes:**\n" + str(fixes_block) + 
+                str(stdout_block) + str(stderr_block) + "\n\n" +
+                "**Original Requirements:**\n" + str(original_prompt) + "\n\n" +
+                "**TASK:**\n" +
+                "Provide a corrected, complete Python script that adheres to the original requirements and addresses the error above. Reply ONLY with the full Python code inside a single markdown code block.")
 
     def _generate_suggested_fixes(self, error_type: str, error_message: str) -> list:
         fixes = []
@@ -54,6 +42,14 @@ class SimpleTrainingAgent(Agent):
             fixes += [
                 "Fix indentation levels consistently (spaces only)",
                 "Ensure each control statement has a properly indented block",
+            ]
+        if "invalid format specifier" in msg or "format specifier" in msg:
+            fixes += [
+                "COMPLETELY REMOVE all f-strings (f'...') from your code",
+                "Replace f-strings with simple string concatenation using + operator",
+                "For metrics: accuracy_val = accuracy_score(y_test, y_pred); metrics = {'accuracy': accuracy_val}",
+                "Never use curly braces {} inside strings except in final JSON structure",
+                "Avoid .format() method and % formatting completely",
             ]
         if "valueerror" in error_type.lower() and "feature names" in msg:
             fixes += [
@@ -92,7 +88,7 @@ class SimpleTrainingAgent(Agent):
             end = min(len(lines), line_number + 3)
             snippet = []
             for i in range(start, end):
-                prefix = f"{i+1}: "
+                prefix = str(i+1) + ": "
                 if i + 1 == line_number:
                     snippet.append(prefix + ">>> " + lines[i] + " <<< ERROR HERE")
                 else:
@@ -170,13 +166,42 @@ class SimpleTrainingAgent(Agent):
                 stderr = "\n".join(stderr_parts).strip()
             elif isinstance(logs, str):
                 stdout = logs.strip()
+        
+        # Try additional attributes that might contain output
+        if not stdout:
+            for attr in ['results', 'output', 'text']:
+                val = getattr(execution, attr, None)
+                if isinstance(val, str) and val.strip():
+                    stdout = val.strip()
+                    break
+                elif isinstance(val, list) and val:
+                    # Join list items if it's a list of strings
+                    try:
+                        stdout = "\n".join(str(item) for item in val).strip()
+                        if stdout:
+                            break
+                    except:
+                        continue
 
         return stdout, stderr, err
 
     def _extract_json_from_text(self, text: str):
         if not text:
             return None
-        # Find candidate JSON objects
+        
+        # First try: extract JSON from the last line (most likely location)
+        lines = text.strip().split('\n')
+        for line in reversed(lines):
+            line = line.strip()
+            if line.startswith('{') and line.endswith('}'):
+                try:
+                    parsed = json.loads(line)
+                    if isinstance(parsed, dict):
+                        return parsed
+                except Exception:
+                    continue
+        
+        # Second try: find candidate JSON objects in the entire text
         candidates = re.findall(r'\{[\s\S]*?\}', text, re.DOTALL)
         for candidate in reversed(candidates):
             try:
@@ -186,66 +211,191 @@ class SimpleTrainingAgent(Agent):
             except Exception:
                 continue
         return None
+
+    def _validate_code_for_fstring_issues(self, code: str) -> tuple[bool, str]:
+        """Check for potential f-string and formatting issues in generated code."""
+        issues = []
+        
+        # Check for f-strings
+        if re.search(r'f["\']', code):
+            issues.append("Code contains f-strings (f'...' or f\"...\") which are prohibited")
+        
+        # Check for .format() calls
+        if '.format(' in code:
+            issues.append("Code contains .format() calls which should be avoided")
+        
+        # Check for % formatting
+        if re.search(r'%\s*[sdif]', code):
+            issues.append("Code contains % string formatting which should be avoided")
+        
+        # Check for suspicious curly braces in strings that aren't JSON
+        lines = code.split('\n')
+        for i, line in enumerate(lines):
+            # Skip lines that are clearly JSON construction
+            if 'json.dumps' in line or '"metrics"' in line or '"model_path"' in line:
+                continue
+            # Look for curly braces in string literals
+            if re.search(r'["\'][^"\']*\{[^}]*\}[^"\']*["\']', line):
+                issues.append("Line " + str(i+1) + " contains suspicious curly braces in string: " + line.strip())
+        
+        if issues:
+            return False, "; ".join(issues)
+        return True, ""
     def execute(self, model_selection: dict, preprocessing_output: dict, **kwargs):
         # 1. Extract necessary inputs
-        sandbox = preprocessing_output["sandbox"]
+        preprocessing_sandbox = preprocessing_output["sandbox"]
         remote_paths = preprocessing_output.get("remote_paths", {})
         download_urls = preprocessing_output.get("download_urls", {})
         local_paths = preprocessing_output.get("local_dataset_paths", {})
         model_name = model_selection.get("recommended_model")
         task_type = model_selection.get("task_type")
 
-        # Prefer absolute file paths inside sandbox over URLs
-        def pick_path(key: str) -> str | None:
-            # remote_paths are absolute paths inside sandbox
-            path = remote_paths.get(key)
-            if isinstance(path, str) and path:
-                return path
-            # fallback to download_urls if they are absolute sandbox paths (not http)
-            url = download_urls.get(key)
-            if isinstance(url, str) and url and not url.lower().startswith("http"):
-                return url
-            # last resort: local host paths (not ideal inside sandbox, but kept for completeness)
-            lp = local_paths.get(key)
-            return lp if isinstance(lp, str) and lp else None
+        # Create a new sandbox for training to avoid file path conflicts
+        sandbox = Sandbox.create()
+        
+        # Download and upload required files to the new sandbox
+        def download_and_upload_file(key: str) -> str | None:
+            # Try local paths first (already downloaded)
+            local_path = local_paths.get(key)
+            if local_path and os.path.exists(local_path):
+                try:
+                    with open(local_path, "rb") as f:
+                        remote_file = sandbox.files.write(key + ".csv", f)
+                    return remote_file.path
+                except Exception as e:
+                    print("Failed to upload local file " + str(local_path) + ": " + str(e))
+            
+            # Try downloading from preprocessing sandbox
+            remote_path = remote_paths.get(key)
+            if remote_path and isinstance(remote_path, str):
+                try:
+                    file_bytes = preprocessing_sandbox.files.read(remote_path)
+                    if isinstance(file_bytes, str):
+                        file_bytes = file_bytes.encode('utf-8')
+                    
+                    filename = (key + ".csv") if key != "preprocessor" else "preprocessor.joblib"
+                    remote_file = sandbox.files.write(filename, file_bytes)
+                    return remote_file.path
+                except Exception as e:
+                    print("Failed to download and upload file " + str(key) + " from " + str(remote_path) + ": " + str(e))
+            
+            # Try download URLs as last resort
+            download_url = download_urls.get(key)
+            if download_url and isinstance(download_url, str) and download_url.startswith("http"):
+                try:
+                    import requests
+                    response = requests.get(download_url, timeout=300)
+                    response.raise_for_status()
+                    
+                    filename = (key + ".csv") if key != "preprocessor" else "preprocessor.joblib"  
+                    remote_file = sandbox.files.write(filename, response.content)
+                    return remote_file.path
+                except Exception as e:
+                    print("Failed to download file " + str(key) + " from URL " + str(download_url) + ": " + str(e))
+            
+            return None
 
-        x_train_path = pick_path("X_train")
-        y_train_path = pick_path("y_train")
-        x_test_path = pick_path("X_test")
-        y_test_path = pick_path("y_test")
-        x_val_path = pick_path("X_val")
-        y_val_path = pick_path("y_val")
+        x_train_path = download_and_upload_file("X_train")
+        y_train_path = download_and_upload_file("y_train")
+        x_test_path = download_and_upload_file("X_test")
+        y_test_path = download_and_upload_file("y_test")
+        x_val_path = download_and_upload_file("X_val")
+        y_val_path = download_and_upload_file("y_val")
+
+        # Validate that required files were uploaded successfully
+        if not x_train_path or not y_train_path or not x_test_path or not y_test_path:
+            sandbox.kill()
+            missing = []
+            if not x_train_path: missing.append("X_train")
+            if not y_train_path: missing.append("y_train") 
+            if not x_test_path: missing.append("X_test")
+            if not y_test_path: missing.append("y_test")
+            raise Exception("Failed to upload required training files: " + str(missing))
 
         val_lines = ""
         if x_val_path and y_val_path:
-            val_lines = f"\n    - X_val_path: {x_val_path}\n    - y_val_path: {y_val_path}"
+            val_lines = "\n    - X_val_path: " + str(x_val_path) + "\n    - y_val_path: " + str(y_val_path)
 
-        prompt = f"""
-You are an expert data scientist tasked with writing a Python script to train a machine learning model and evaluate it.
-
-Here is the context:
-1.  **Model to be trained**: {model_name}
-2.  **Task Type**: {task_type}
-3.  **Datasets**: The datasets are available at the following absolute file paths inside the environment. Your script must load directly from these file paths (not URLs).
-    - X_train_path: {x_train_path}
-    - y_train_path: {y_train_path}
-    - X_test_path: {x_test_path}
-    - y_test_path: {y_test_path}{val_lines}
-
-Important: Validation files may be missing. Your script MUST NOT fail if validation files are absent; simply proceed without using a validation set.
-
-**Your task is to generate a Python script that performs the following steps:**
-1.  **Load Data**: At the top of the script, assign variables for the file paths exactly as provided above (e.g., `X_train_path = r"{x_train_path}"`). Then load the datasets using `pd.read_csv(X_train_path)` etc. Always load training and test data. Load validation data only if both validation paths are provided (handle missing validation gracefully).
-2.  **Instantiate Model**: Import the specified model (`{model_name}`) from scikit-learn and instantiate it.
-3.  **Train Model**: Train the model on the training data (X_train, y_train).
-4.  **Evaluate Model**: Evaluate the trained model on the test data (X_test, y_test).
-    - For **classification** tasks, calculate accuracy, precision, recall, and F1-score.
-    - For **regression** tasks, calculate Mean Squared Error (MSE), Mean Absolute Error (MAE), and R-squared.
-5.  **Save Model**: Save the trained model to a file named `trained_model.pickle` using the `pickle` library.
-6.  **Output**: Print a JSON object to standard output containing the calculated evaluation metrics and the path to the saved model file (`/home/user/trained_model.pickle`).
-
-Please generate only the Python script itself, without any explanations.
-"""
+        prompt = ("You are an expert data scientist. Write a complete Python script to train and evaluate the specified model.\n\n" +
+                 "CONTEXT\n" +
+                 "- Model to be trained: " + str(model_name) + "\n" +
+                 "- Task Type: " + str(task_type) + "\n" +
+                 "- Datasets (absolute paths):\n" +
+                 "  - X_train_path: " + str(x_train_path) + "\n" +
+                 "  - y_train_path: " + str(y_train_path) + "\n" +
+                 "  - X_test_path: " + str(x_test_path) + "\n" +
+                 "  - y_test_path: " + str(y_test_path) + str(val_lines) + "\n\n" +
+                 "CRITICAL INSTRUCTIONS\n" +
+                 "1) Data loading: At the top, assign file path variables exactly as provided (e.g., X_train_path = r\"" + str(x_train_path) + "\"). Load with pandas. Ensure X and y indices are aligned with reset_index(drop=True) and y is 1D with .squeeze().\n" +
+                 "2) Validation handling: If both X_val_path and y_val_path are provided, load them and optionally report validation metrics, but the primary evaluation must be on test data. If validation is missing, proceed without it.\n" +
+                 "3) Metrics:\n" +
+                 "   - Classification: accuracy, precision, recall, f1_score.\n" +
+                 "   - Regression: mse, mae, r2.\n" +
+                 "4) Saving: Save the trained model as trained_model.pickle using pickle. Compute the absolute path dynamically with os.path.abspath.\n" +
+                 "5) Output format: Print a single JSON object to stdout with this exact schema and nothing else after it:\n" +
+                 "   {\n" +
+                 "     \"metrics\": { ... },\n" +
+                 "     \"model_path\": \"/abs/path/to/trained_model.pickle\"\n" +
+                 "   }\n\n" +
+                 "**CRITICAL FORMATTING RULES:**\n" +
+                 "6) ABSOLUTELY NO F-STRINGS: Do not use f\"...\" syntax anywhere in your code.\n" +
+                 "7) NO STRING FORMATTING: Do not use .format() method or % formatting.\n" +
+                 "8) NO CURLY BRACES IN STRINGS: Avoid { } in any string literals except in the final JSON structure.\n" +
+                 "9) If you need to print debug information, use regular print statements with string concatenation only.\n" +
+                 "10) For metrics calculation: First compute each metric value, assign to variables, then build the dict:\n" +
+                 "   ```\n" +
+                 "   accuracy_val = accuracy_score(y_test, y_pred)\n" +
+                 "   precision_val = precision_score(y_test, y_pred, average='weighted')\n" +
+                 "   metrics = {\"accuracy\": accuracy_val, \"precision\": precision_val}\n" +
+                 "   ```\n" +
+                 "11) SILENCE ALL WARNINGS: Add these lines at the top after imports:\n" +
+                 "    import warnings\n" +
+                 "    warnings.filterwarnings('ignore')\n" +
+                 "    import os\n" +
+                 "    os.environ['PYTHONWARNINGS'] = 'ignore'\n" +
+                 "12) JSON SERIALIZATION: Convert numpy types to Python native types before JSON serialization using convert_numpy_types function.\n" +
+                 "13) ENSURE OUTPUT: The script MUST print the JSON output to stdout as the last action. Do not suppress or capture this output.\n" +
+                 "14) Reply ONLY with the full Python code inside a single ```python code block.\n\n" +
+                 "EXAMPLE STRUCTURE (illustrative)\n" +
+                 "```python\n" +
+                 "import os, json, pandas as pd\n" +
+                 "import warnings, numpy as np\n" +
+                 "from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, mean_squared_error, mean_absolute_error, r2_score\n" +
+                 "# import model class ...\n\n" +
+                 "# Suppress warnings\n" +
+                 "warnings.filterwarnings('ignore')\n" +
+                 "os.environ['PYTHONWARNINGS'] = 'ignore'\n\n" +
+                 "def convert_numpy_types(obj):\n" +
+                 "    if isinstance(obj, dict):\n" +
+                 "        return {k: convert_numpy_types(v) for k, v in obj.items()}\n" +
+                 "    elif isinstance(obj, (np.integer, np.int64, np.int32)):\n" +
+                 "        return int(obj)\n" +
+                 "    elif isinstance(obj, (np.floating, np.float64, np.float32)):\n" +
+                 "        return float(obj)\n" +
+                 "    elif isinstance(obj, np.ndarray):\n" +
+                 "        return obj.tolist()\n" +
+                 "    else:\n" +
+                 "        return obj\n\n" +
+                 "X_train_path = r\"" + str(x_train_path) + "\"\n" +
+                 "y_train_path = r\"" + str(y_train_path) + "\"\n" +
+                 "X_test_path = r\"" + str(x_test_path) + "\"\n" +
+                 "y_test_path = r\"" + str(y_test_path) + "\"\n\n" +
+                 "X_train = pd.read_csv(X_train_path).reset_index(drop=True)\n" +
+                 "y_train = pd.read_csv(y_train_path).squeeze().reset_index(drop=True)\n" +
+                 "X_test = pd.read_csv(X_test_path).reset_index(drop=True)\n" +
+                 "y_test = pd.read_csv(y_test_path).squeeze().reset_index(drop=True)\n\n" +
+                 "# model = ...\n" +
+                 "# model.fit(X_train, y_train)\n" +
+                 "# y_pred = model.predict(X_test)\n" +
+                 "# metrics = {\"accuracy\": accuracy_score(y_test, y_pred)}  # choose by task type\n\n" +
+                 "import pickle\n" +
+                 "out_path = os.path.abspath('trained_model.pickle')\n" +
+                 "with open(out_path, 'wb') as f:\n" +
+                 "    pickle.dump(model, f)\n" +
+                 "result = {\"metrics\": convert_numpy_types(metrics), \"model_path\": out_path}\n" +
+                 "print(json.dumps(result))\n" +
+                 "```\n\n" +
+                 "Now produce the complete runnable script.")
 
         client = OpenAI(
             base_url="https://openrouter.ai/api/v1",
@@ -266,9 +416,13 @@ Please generate only the Python script itself, without any explanations.
             })
         
         max_retries = 3
+        models = ["qwen/qwen-2.5-coder-32b-instruct:free", "agentica-org/deepcoder-14b-preview:free", "openai/gpt-oss-20b:free"]
         for attempt in range(max_retries):
+            # Use different models for different attempts to increase success rate
+            model_to_use = models[attempt % len(models)]
+            
             response = client.chat.completions.create(
-                model="moonshotai/kimi-dev-72b:free",#"qwen/qwen3-coder:free", # prefer this but rate limits
+                model=model_to_use,
                 messages=messages,
                 max_tokens=2500
             )
@@ -279,7 +433,7 @@ Please generate only the Python script itself, without any explanations.
             code_match = re.search(r'```(?:python)?\s*(.*?)```', generated_text, re.DOTALL)
             
             if not code_match:
-                print(f"\n[{self.__class__.__name__}] Attempt {attempt + 1}/{max_retries} failed: LLM did not return a Python code block.")
+                print("\n[" + self.__class__.__name__ + "] Attempt " + str(attempt + 1) + "/" + str(max_retries) + " failed: LLM did not return a Python code block.")
                 feedback = "Your response did not contain a Python code block. Please generate only the Python code, enclosed in a ```python ... ``` block."
                 messages.append({"role": "user", "content": feedback})
                 if attempt == max_retries - 1:
@@ -287,6 +441,27 @@ Please generate only the Python script itself, without any explanations.
                 continue
 
             code = code_match.group(1).strip()
+
+            # Validate code for f-string issues before execution
+            is_valid, validation_error = self._validate_code_for_fstring_issues(code)
+            if not is_valid:
+                print("\n[" + self.__class__.__name__ + "] Attempt " + str(attempt + 1) + "/" + str(max_retries) + " failed: Code validation error.")
+                print("Validation error: " + str(validation_error))
+                
+                feedback = ("Your code contains formatting issues that will cause execution failures:\n\n" +
+                           str(validation_error) + "\n\n" +
+                           "Please rewrite the code following these strict rules:\n" +
+                           "- Use NO f-strings anywhere (no f\"...\" or f'...')\n" +
+                           "- Use NO .format() method calls\n" +
+                           "- Use NO % string formatting\n" +
+                           "- Use simple string concatenation with + operator if needed\n" +
+                           "- For metrics, calculate values first, then build dict: accuracy_val = accuracy_score(y_test, y_pred); metrics = {\"accuracy\": accuracy_val}\n\n" +
+                           "Please provide the corrected code.")
+
+                messages.append({"role": "user", "content": feedback})
+                if attempt == max_retries - 1:
+                    raise Exception("Code validation failed after multiple attempts: " + str(validation_error))
+                continue
 
             try:
                 before_files = self._snapshot_files(sandbox)
@@ -306,17 +481,23 @@ Please generate only the Python script itself, without any explanations.
                     nonlocal execution_error
                     execution_error = error
 
+                # Extend sandbox TTL to avoid premature shutdowns during training
+                try:
+                    sandbox.set_timeout(3600)
+                except Exception:
+                    pass
+
                 try:
                     execution = sandbox.run_code(
                         code,
-                        timeout=1200,
+                        timeout=1800,
                         on_stdout=on_stdout,
                         on_stderr=on_stderr,
                         on_error=on_error,
                     )
                 except TypeError:
                     # Fallback if this Sandbox version does not support streaming callbacks
-                    execution = sandbox.run_code(code, timeout=1200)
+                    execution = sandbox.run_code(code, timeout=1800)
 
                 # Consolidate outputs from multiple sources
                 stdout = ''.join(stdout_buffer).strip()
@@ -366,15 +547,15 @@ Please generate only the Python script itself, without any explanations.
 
                 if err:
                     error_details = (
-                        f"Error Name: {getattr(err, 'name', 'ExecutionError')}\n"
-                        f"Error Value: {getattr(err, 'value', str(err))}\n"
-                        f"Traceback:\n{getattr(err, 'traceback', '')}"
+                        "Error Name: " + str(getattr(err, 'name', 'ExecutionError')) + "\n" +
+                        "Error Value: " + str(getattr(err, 'value', str(err))) + "\n" +
+                        "Traceback:\n" + str(getattr(err, 'traceback', ''))
                     )
                     if stdout:
-                        error_details += f"\n--- stdout ---\n{stdout}"
+                        error_details += "\n--- stdout ---\n" + str(stdout)
                     if stderr:
-                        error_details += f"\n--- stderr ---\n{stderr}"
-                    print(f"\n[{self.__class__.__name__}] Attempt {attempt + 1}/{max_retries} failed: Code execution error.")
+                        error_details += "\n--- stderr ---\n" + str(stderr)
+                    print("\n[" + self.__class__.__name__ + "] Attempt " + str(attempt + 1) + "/" + str(max_retries) + " failed: Code execution error.")
                     print(error_details)
 
                     # Build structured error context for the next attempt
@@ -392,7 +573,7 @@ Please generate only the Python script itself, without any explanations.
                         "content": self._build_error_feedback_prompt(structured_ctx, prompt)
                     })
                     if attempt == max_retries - 1:
-                        raise Exception(f"Code execution failed after {max_retries} attempts. Last error: {getattr(err, 'value', str(err))}")
+                        raise Exception("Code execution failed after " + str(max_retries) + " attempts. Last error: " + str(getattr(err, 'value', str(err))))
                     continue
 
                 # Success
@@ -433,16 +614,34 @@ Please generate only the Python script itself, without any explanations.
                 model_path = training_results.get("model_path")
                 if model_path:
                     try:
-                        training_results["model_download_url"] = sandbox.download_url(model_path)
-                    except Exception:
-                        # If the sandbox API doesn't support download_url, continue without it
-                        pass
+                        # Download the model directly before killing sandbox
+                        model_bytes = sandbox.files.read(model_path)
+                        if isinstance(model_bytes, str):
+                            try:
+                                model_bytes = model_bytes.encode('latin-1')
+                            except Exception:
+                                model_bytes = model_bytes.encode('utf-8', 'ignore')
+                        training_results["model_bytes"] = model_bytes
+                        print("Model downloaded directly from sandbox before cleanup")
+                    except Exception as e:
+                        print("Failed to download model directly from sandbox: " + str(e))
+                        # Fallback to download URL if direct download fails
+                        try:
+                            training_results["model_download_url"] = sandbox.download_url(model_path)
+                        except Exception:
+                            pass
 
+                # Clean up sandbox before returning
+                try:
+                    sandbox.kill()
+                except Exception:
+                    pass
+                    
                 return training_results
 
             except Exception as e:
-                print(f"\n[{self.__class__.__name__}] Attempt {attempt + 1}/{max_retries} failed: An unexpected exception occurred.")
-                print(f"Exception: {e}")
+                print("\n[" + self.__class__.__name__ + "] Attempt " + str(attempt + 1) + "/" + str(max_retries) + " failed: An unexpected exception occurred.")
+                print("Exception: " + str(e))
                 structured_ctx = self._create_detailed_error_context(locals().get('code', ''), e, '', '')
                 self.last_error_context = structured_ctx
                 messages.append({
@@ -450,6 +649,16 @@ Please generate only the Python script itself, without any explanations.
                     "content": self._build_error_feedback_prompt(structured_ctx, prompt)
                 })
                 if attempt == max_retries - 1:
+                    # Clean up sandbox before re-raising
+                    try:
+                        sandbox.kill()
+                    except Exception:
+                        pass
                     raise e
         
+        # Clean up sandbox on failure
+        try:
+            sandbox.kill()
+        except Exception:
+            pass
         raise Exception("Failed to generate and execute valid code after multiple attempts.")
